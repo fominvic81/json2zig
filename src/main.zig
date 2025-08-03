@@ -49,54 +49,69 @@ const Type = union(enum) {
     };
 };
 
+const Resolved = struct {
+    types: []Type,
+    root: Type.Index,
+
+    pub fn deinit(this: Resolved, gpa: Allocator) void {
+        gpa.free(this.types);
+    }
+};
+
 const Resolver = struct {
     gpa: Allocator,
     types: std.ArrayListUnmanaged(Type),
 
     const Error = Allocator.Error || error{RootNodeCanNotBeNull};
 
-    pub fn resolve(gpa: Allocator, json: std.json.Value) Error!void {
+    pub fn resolve(gpa: Allocator, json: std.json.Value) Error!Resolved {
         var resolver: Resolver = .{
             .gpa = gpa,
             .types = .empty,
         };
-        const @"type" = try resolver.resolveType(json);
-        _ = @"type";
+        defer resolver.types.deinit(gpa);
+
+        const root = try resolver.makeType(try resolver.resolveType(json));
+
+        return .{
+            .types = try resolver.types.toOwnedSlice(gpa),
+            .root = root,
+        };
     }
 
-    fn resolveType(this: *Resolver, json: std.json.Value) Error!Type.Index {
+    fn resolveType(this: *Resolver, json: std.json.Value) Error!Type {
         return switch (json) {
             // TODO: do not create type for primitives
-            .null => try this.makeType(.{
+            .null => .{
                 .optional = .{ .child_type = null },
-            }),
-            .bool => try this.makeType(.bool),
-            .integer => |value| try this.makeType(.{
+            },
+            .bool => .bool,
+            .integer => |value| .{
                 .integer = .{
                     .min = value,
                     .max = value,
                 },
-            }),
-            .float => |value| try this.makeType(.{
+            },
+            .float => |value| .{
                 .float = .{
                     .min = value,
                     .max = value,
                 },
-            }),
-            .number_string => |string| try this.makeType(.{
+            },
+            .number_string => |string| .{
                 .string = .{
                     .min_len = string.len,
                     .max_len = string.len,
                 },
-            }),
-            .string => |string| try this.makeType(.{
+            },
+            .string => |string| .{
                 .string = .{
                     .min_len = string.len,
                     .max_len = string.len,
                 },
-            }),
+            },
             .array => |array| blk: {
-                var optional_child_type: ?Type.Index = null;
+                var optional_child_type: ?Type = null;
 
                 for (array.items) |value| {
                     const other_child_type = try this.resolveType(value);
@@ -107,13 +122,13 @@ const Resolver = struct {
                     }
                 }
 
-                break :blk try this.makeType(.{
+                break :blk .{
                     .array = .{
                         .min_len = array.items.len,
                         .max_len = array.items.len,
-                        .child_type = optional_child_type,
+                        .child_type = if (optional_child_type) |child_type| try this.makeType(child_type) else null,
                     },
-                });
+                };
             },
             .object => @panic("TODO"),
         };
@@ -125,20 +140,17 @@ const Resolver = struct {
         return index;
     }
 
-    fn unionOptionalTypes(this: *Resolver, optional_type_index_a: ?Type.Index, optional_type_index_b: ?Type.Index) Error!?Type.Index {
-        if (optional_type_index_a) |type_index_a| {
-            if (optional_type_index_b) |type_index_b| {
-                return try this.unionTypes(type_index_a, type_index_b);
+    fn unionOptionalTypes(this: *Resolver, optional_type_a: ?Type, optional_type_b: ?Type) Error!?Type {
+        if (optional_type_a) |type_a| {
+            if (optional_type_b) |type_b| {
+                return try this.unionTypes(type_a, type_b);
             }
-            return optional_type_index_a;
+            return optional_type_a;
         }
-        return optional_type_index_b;
+        return optional_type_b;
     }
 
-    fn unionTypes(this: *Resolver, type_index_a: Type.Index, type_index_b: Type.Index) Error!Type.Index {
-        const type_a = this.types.items[type_index_a];
-        const type_b = this.types.items[type_index_b];
-
+    fn unionTypes(this: *Resolver, type_a: Type, type_b: Type) Error!Type {
         if (std.meta.activeTag(type_a) == std.meta.activeTag(type_b)) {
             const @"type": Type = switch (type_a) {
                 .bool => .bool,
@@ -165,19 +177,19 @@ const Resolver = struct {
                         .array = .{
                             .min_len = @min(type_a.array.min_len, type_b.array.min_len),
                             .max_len = @max(type_a.array.max_len, type_b.array.max_len),
-                            .child_type = try this.unionOptionalTypes(type_a.array.child_type, type_b.array.child_type),
+                            .child_type = if (try this.unionOptionalTypes(if (type_a.array.child_type) |child_type_a| this.types.items[child_type_a] else null, if (type_b.array.child_type) |child_type_b| this.types.items[child_type_b] else null)) |child_type| try this.makeType(child_type) else null,
                         },
                     };
                 },
                 // .object => {},
                 .optional => .{
                     .optional = .{
-                        .child_type = try this.unionOptionalTypes(type_a.optional.child_type, type_b.optional.child_type),
+                        .child_type = if (try this.unionOptionalTypes(if (type_a.optional.child_type) |child_type_a| this.types.items[child_type_a] else null, if (type_b.optional.child_type) |child_type_b| this.types.items[child_type_b] else null)) |child_type| try this.makeType(child_type) else null,
                     },
                 },
             };
 
-            return try this.makeType(@"type");
+            return @"type";
         }
         @panic("TODO");
     }
@@ -198,7 +210,8 @@ pub fn main() !void {
     const json = try std.json.parseFromTokenSource(std.json.Value, gpa, &json_reader, .{});
     defer json.deinit();
 
-    try Resolver.resolve(gpa, json.value);
+    var resolved = try Resolver.resolve(gpa, json.value);
+    defer resolved.deinit(gpa);
 
     // switch (json.value) {
     //     null => Error.RootNodeCanNotBeNull,
