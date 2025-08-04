@@ -240,19 +240,19 @@ const Parser = struct {
                             var b_i = b_i_s + 1;
                             while (b_i < fields_b.len and field_b_to_a[b_i] == null) : (b_i += 1) {
                                 fields[i].name = fields_b[b_i].name;
-                                fields[i].type = try this.allocType(.{ .optional = .{ .child_type = fields_b[b_i].type } });
+                                fields[i].type = if (fields_b[b_i].type.* == .optional) fields_b[b_i].type else try this.allocType(.{ .optional = .{ .child_type = fields_b[b_i].type } });
                                 i += 1;
                             }
                         } else {
                             fields[i].name = field_a.name;
-                            fields[i].type = try this.allocType(.{ .optional = .{ .child_type = field_a.type } });
+                            fields[i].type = if (field_a.type.* == .optional) field_a.type else try this.allocType(.{ .optional = .{ .child_type = field_a.type } });
                             i += 1;
                         }
                     }
                     var b_i: usize = 0;
                     while (b_i < fields_b.len and field_b_to_a[b_i] == null) : (b_i += 1) {
                         fields[i].name = fields_b[b_i].name;
-                        fields[i].type = try this.allocType(.{ .optional = .{ .child_type = fields_b[b_i].type } });
+                        fields[i].type = if (fields_b[b_i].type.* == .optional) fields_b[b_i].type else try this.allocType(.{ .optional = .{ .child_type = fields_b[b_i].type } });
                         i += 1;
                     }
                     std.debug.assert(i == fields.len);
