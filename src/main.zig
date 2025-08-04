@@ -3,6 +3,8 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Type = union(enum) {
+    unknown,
+    any,
     bool,
     integer: Integer,
     float: Float,
@@ -10,8 +12,6 @@ const Type = union(enum) {
     array: Array,
     object: Object,
     optional: Optional,
-    // any,
-    // union,
 
     pub const Integer = struct {
         min: i64,
@@ -31,7 +31,7 @@ const Type = union(enum) {
     pub const Array = struct {
         min_len: usize,
         max_len: usize,
-        child_type: ?*Type,
+        child_type: *Type,
     };
 
     pub const Object = struct {
@@ -44,7 +44,7 @@ const Type = union(enum) {
     };
 
     pub const Optional = struct {
-        child_type: ?*Type,
+        child_type: *Type,
     };
 };
 
@@ -64,25 +64,19 @@ const Parsed = struct {
 
     fn renderType(this: *Parsed, writer: *std.Io.Writer, @"type": Type, indent_level: usize) std.Io.Writer.Error!void {
         switch (@"type") {
+            .unknown => try writer.writeAll("UNKNOWN"),
+            .any => try writer.writeAll("ANY"),
             .bool => try writer.writeAll("bool"),
             .integer => try writer.writeAll("i64"),
             .float => try writer.writeAll("f64"),
             .string => try writer.writeAll("[]const u8"),
             .array => |array| {
-                if (array.child_type) |child_type| {
-                    try writer.writeAll("[]");
-                    try this.renderType(writer, child_type.*, indent_level);
-                } else {
-                    try writer.writeAll("[]ERROR");
-                }
+                try writer.writeAll("[]");
+                try this.renderType(writer, array.child_type.*, indent_level);
             },
             .optional => |optional| {
-                if (optional.child_type) |child_type| {
-                    try writer.writeAll("?");
-                    try this.renderType(writer, child_type.*, indent_level);
-                } else {
-                    try writer.writeAll("?ERROR");
-                }
+                try writer.writeAll("?");
+                try this.renderType(writer, optional.child_type.*, indent_level);
             },
             .object => |object| {
                 try writer.writeAll("struct {\n");
@@ -139,7 +133,7 @@ const Parser = struct {
 
     fn parseType(this: *Parser, json: std.json.Value) Error!Type {
         return switch (json) {
-            .null => .{ .optional = .{ .child_type = null } },
+            .null => .{ .optional = .{ .child_type = try this.allocType(.unknown) } },
             .bool => .bool,
             .integer => |value| .{ .integer = .{
                 .min = value,
@@ -158,21 +152,17 @@ const Parser = struct {
                 .max_len = string.len,
             } },
             .array => |array| blk: {
-                var optional_child_type: ?Type = null;
+                var child_type: Type = .unknown;
 
                 for (array.items) |value| {
                     const other_child_type = try this.parseType(value);
-                    if (optional_child_type) |child_type| {
-                        optional_child_type = try this.mergeTypes(child_type, other_child_type);
-                    } else {
-                        optional_child_type = other_child_type;
-                    }
+                    child_type = try this.mergeTypes(child_type, other_child_type);
                 }
 
                 break :blk .{ .array = .{
                     .min_len = array.items.len,
                     .max_len = array.items.len,
-                    .child_type = try this.allocOptionalType(optional_child_type),
+                    .child_type = try this.allocType(child_type),
                 } };
             },
             .object => |object| blk: {
@@ -193,19 +183,11 @@ const Parser = struct {
         };
     }
 
-    fn mergeOptionalTypes(this: *Parser, optional_type_a: ?*Type, optional_type_b: ?*Type) Error!?*Type {
-        if (optional_type_a) |type_a| {
-            if (optional_type_b) |type_b| {
-                return try this.allocType(try this.mergeTypes(type_a.*, type_b.*));
-            }
-            return optional_type_a;
-        }
-        return optional_type_b;
-    }
-
     fn mergeTypes(this: *Parser, type_a: Type, type_b: Type) Error!Type {
         if (std.meta.activeTag(type_a) == std.meta.activeTag(type_b)) {
             const @"type": Type = switch (type_a) {
+                .unknown => .unknown,
+                .any => .any,
                 .bool => .bool,
                 .integer => .{ .integer = .{
                     .min = @min(type_a.integer.min, type_b.integer.min),
@@ -222,7 +204,7 @@ const Parser = struct {
                 .array => .{ .array = .{
                     .min_len = @min(type_a.array.min_len, type_b.array.min_len),
                     .max_len = @max(type_a.array.max_len, type_b.array.max_len),
-                    .child_type = try this.mergeOptionalTypes(type_a.array.child_type, type_b.array.child_type),
+                    .child_type = try this.allocType(try this.mergeTypes(type_a.array.child_type.*, type_b.array.child_type.*)),
                 } },
                 .object => blk1: {
                     const fields_a = type_a.object.fields;
@@ -258,31 +240,19 @@ const Parser = struct {
                             var b_i = b_i_s + 1;
                             while (b_i < fields_b.len and field_b_to_a[b_i] == null) : (b_i += 1) {
                                 fields[i].name = fields_b[b_i].name;
-                                fields[i].type = try this.allocType(.{
-                                    .optional = .{
-                                        .child_type = fields_b[b_i].type,
-                                    },
-                                });
+                                fields[i].type = try this.allocType(.{ .optional = .{ .child_type = fields_b[b_i].type } });
                                 i += 1;
                             }
                         } else {
                             fields[i].name = field_a.name;
-                            fields[i].type = try this.allocType(.{
-                                .optional = .{
-                                    .child_type = field_a.type,
-                                },
-                            });
+                            fields[i].type = try this.allocType(.{ .optional = .{ .child_type = field_a.type } });
                             i += 1;
                         }
                     }
                     var b_i: usize = 0;
                     while (b_i < fields_b.len and field_b_to_a[b_i] == null) : (b_i += 1) {
                         fields[i].name = fields_b[b_i].name;
-                        fields[i].type = try this.allocType(.{
-                            .optional = .{
-                                .child_type = fields_b[b_i].type,
-                            },
-                        });
+                        fields[i].type = try this.allocType(.{ .optional = .{ .child_type = fields_b[b_i].type } });
                         i += 1;
                     }
                     std.debug.assert(i == fields.len);
@@ -292,22 +262,45 @@ const Parser = struct {
                     } };
                 },
                 .optional => .{ .optional = .{
-                    .child_type = try this.mergeOptionalTypes(type_a.optional.child_type, type_b.optional.child_type),
+                    .child_type = try this.allocType(try this.mergeTypes(type_a.optional.child_type.*, type_b.optional.child_type.*)),
                 } },
             };
             return @"type";
         }
-        @panic("TODO");
+        if (type_a == .unknown) return type_b;
+        if (type_b == .unknown) return type_a;
+        if (type_a == .any) return .any;
+        if (type_b == .any) return .any;
+        if (type_a == .optional) {
+            return .{ .optional = .{
+                .child_type = try this.allocType(try this.mergeTypes(type_a.optional.child_type.*, type_b)),
+            } };
+        }
+        if (type_b == .optional) {
+            return .{ .optional = .{
+                .child_type = try this.allocType(try this.mergeTypes(type_a, type_b.optional.child_type.*)),
+            } };
+        }
+        if (type_a == .integer and type_b == .float) {
+            return .{ .float = .{
+                .min = @min(@as(f64, @floatFromInt(type_a.integer.min)), type_b.float.min),
+                .max = @max(@as(f64, @floatFromInt(type_a.integer.max)), type_b.float.max),
+            } };
+        }
+        if (type_a == .float and type_b == .integer) {
+            return .{ .float = .{
+                .min = @min(type_a.float.min, @as(f64, @floatFromInt(type_b.integer.min))),
+                .max = @max(type_a.float.max, @as(f64, @floatFromInt(type_b.integer.max))),
+            } };
+        }
+
+        return .any;
     }
 
     fn allocType(this: *Parser, @"type": Type) Allocator.Error!*Type {
         const type_ptr = try this.arena.allocator().create(Type);
         type_ptr.* = @"type";
         return type_ptr;
-    }
-
-    fn allocOptionalType(this: *Parser, optional_type: ?Type) Allocator.Error!?*Type {
-        return if (optional_type) |@"type"| try this.allocType(@"type") else null;
     }
 };
 
