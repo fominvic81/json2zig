@@ -11,7 +11,6 @@ pub fn build(b: *std.Build) void {
     const exe_mod = b.createModule(.{ .root_source_file = b.path("src/main.zig"), .target = target, .optimize = optimize });
     exe_mod.addImport("json2zig", lib_mod);
     const exe = b.addExecutable(.{ .name = "json2zig", .root_module = exe_mod });
-
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -29,4 +28,14 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
     test_step.dependOn(&run_lib_unit_tests.step);
+
+    const wasm_target = b.resolveTargetQuery(.{ .os_tag = .freestanding, .cpu_arch = .wasm32 });
+    const wasm_mod = b.createModule(.{ .root_source_file = b.path("page/main.zig"), .target = wasm_target, .optimize = optimize });
+    wasm_mod.addImport("json2zig", lib_mod);
+    const wasm = b.addExecutable(.{ .name = "json2zig", .root_module = wasm_mod });
+    wasm.rdynamic = true;
+    wasm.entry = .disabled;
+
+    const wasm_step = b.step("wasm", "Build wasm library");
+    wasm_step.dependOn(&b.addInstallArtifact(wasm, .{}).step);
 }

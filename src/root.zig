@@ -58,6 +58,16 @@ pub const Parsed = struct {
         gpa.destroy(this.arena);
     }
 
+    pub fn renderAlloc(this: *Parsed, gpa: Allocator) Allocator.Error![]const u8 {
+        var output: std.ArrayList(u8) = .init(gpa);
+        defer output.deinit();
+
+        var writer = output.writer().adaptToNewApi();
+        this.render(&writer.new_interface) catch return writer.err.?;
+
+        return try output.toOwnedSlice();
+    }
+
     pub fn render(this: *Parsed, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try this.renderType(writer, this.root, 0);
     }
@@ -185,7 +195,7 @@ pub const Parser = struct {
 
     fn mergeTypes(this: *Parser, type_a: Type, type_b: Type) Error!Type {
         if (std.meta.activeTag(type_a) == std.meta.activeTag(type_b)) {
-            const @"type": Type = switch (type_a) {
+            return switch (type_a) {
                 .unknown => .unknown,
                 .any => .any,
                 .bool => .bool,
@@ -265,7 +275,6 @@ pub const Parser = struct {
                     .child_type = try this.allocType(try this.mergeTypes(type_a.optional.child_type.*, type_b.optional.child_type.*)),
                 } },
             };
-            return @"type";
         }
         if (type_a == .unknown) return type_b;
         if (type_b == .unknown) return type_a;
