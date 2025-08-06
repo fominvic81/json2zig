@@ -1,6 +1,7 @@
 const std = @import("std");
 const j2z = @import("json2zig");
 const Parser = j2z.Parser;
+const Renderer = j2z.Renderer;
 
 pub fn main() !void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -18,6 +19,6 @@ pub fn main() !void {
 
     var buffer: [1024]u8 = undefined;
     var writer = std.fs.File.stdout().writer(&buffer);
-    try parsed.render(&writer.interface);
+    try Renderer.render(parsed, &writer.interface, .{});
     try writer.interface.flush();
 }

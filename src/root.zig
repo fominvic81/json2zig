@@ -57,63 +57,6 @@ pub const Parsed = struct {
         this.arena.deinit();
         gpa.destroy(this.arena);
     }
-
-    pub fn renderAlloc(this: *Parsed, gpa: Allocator) Allocator.Error![]const u8 {
-        var output: std.ArrayList(u8) = .init(gpa);
-        defer output.deinit();
-
-        var writer = output.writer().adaptToNewApi();
-        this.render(&writer.new_interface) catch return writer.err.?;
-
-        return try output.toOwnedSlice();
-    }
-
-    pub fn render(this: *Parsed, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try this.renderType(writer, this.root, 0);
-    }
-
-    fn renderType(this: *Parsed, writer: *std.Io.Writer, @"type": Type, indent_level: usize) std.Io.Writer.Error!void {
-        switch (@"type") {
-            .unknown => try writer.writeAll("UNKNOWN"),
-            .any => try writer.writeAll("ANY"),
-            .bool => try writer.writeAll("bool"),
-            .integer => try writer.writeAll("i64"),
-            .float => try writer.writeAll("f64"),
-            .string => try writer.writeAll("[]const u8"),
-            .array => |array| {
-                try writer.writeAll("[]");
-                try this.renderType(writer, array.child_type.*, indent_level);
-            },
-            .optional => |optional| {
-                try writer.writeAll("?");
-                try this.renderType(writer, optional.child_type.*, indent_level);
-            },
-            .object => |object| {
-                try writer.writeAll("struct {\n");
-                for (object.fields) |field| {
-                    try writer.splatByteAll(' ', (indent_level + 1) * 4);
-                    if (needsEscaping(field.name)) {
-                        try writer.print("@\"{s}\": ", .{field.name});
-                    } else {
-                        try writer.print("{s}: ", .{field.name});
-                    }
-                    try this.renderType(writer, field.type.*, indent_level + 1);
-                    try writer.writeAll(",\n");
-                }
-                try writer.splatByteAll(' ', indent_level * 4);
-                try writer.writeAll("}");
-            },
-        }
-    }
-
-    fn needsEscaping(name: []const u8) bool {
-        if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return true;
-        for (name[1..]) |char| {
-            if (!std.ascii.isAlphanumeric(char) and char != '_') return true;
-        }
-        if (std.zig.Token.keywords.has(name)) return true;
-        return false;
-    }
 };
 
 pub const Parser = struct {
@@ -313,6 +256,84 @@ pub const Parser = struct {
     }
 };
 
+pub const Renderer = struct {
+    parsed: Parsed,
+    writer: *std.Io.Writer,
+    options: Options,
+
+    const Options = struct {
+        string: []const u8 = "[]const u8",
+        integer: []const u8 = "i64",
+        float: []const u8 = "f64",
+        bool: []const u8 = "bool",
+        any: []const u8 = "std.json.Value",
+        unknown: []const u8 = "UNKNOWN",
+    };
+
+    pub fn render(parsed: Parsed, writer: *std.Io.Writer, options: Options) std.Io.Writer.Error!void {
+        const renderer: Renderer = .{
+            .parsed = parsed,
+            .writer = writer,
+            .options = options,
+        };
+
+        try renderer.renderType(writer, parsed.root, 0);
+    }
+
+    pub fn renderAlloc(gpa: Allocator, parsed: Parsed, options: Options) Allocator.Error![]const u8 {
+        var output: std.ArrayList(u8) = .init(gpa);
+        defer output.deinit();
+
+        var writer = output.writer().adaptToNewApi();
+        render(parsed, &writer.new_interface, options) catch return writer.err.?;
+
+        return try output.toOwnedSlice();
+    }
+
+    fn renderType(this: *const Renderer, writer: *std.Io.Writer, @"type": Type, indent_level: usize) std.Io.Writer.Error!void {
+        switch (@"type") {
+            .unknown => try writer.writeAll(this.options.unknown),
+            .any => try writer.writeAll(this.options.any),
+            .bool => try writer.writeAll(this.options.bool),
+            .integer => try writer.writeAll(this.options.integer),
+            .float => try writer.writeAll(this.options.float),
+            .string => try writer.writeAll(this.options.string),
+            .array => |array| {
+                try writer.writeAll("[]");
+                try this.renderType(writer, array.child_type.*, indent_level);
+            },
+            .optional => |optional| {
+                try writer.writeAll("?");
+                try this.renderType(writer, optional.child_type.*, indent_level);
+            },
+            .object => |object| {
+                try writer.writeAll("struct {\n");
+                for (object.fields) |field| {
+                    try writer.splatByteAll(' ', (indent_level + 1) * 4);
+                    if (needsEscaping(field.name)) {
+                        try writer.print("@\"{s}\": ", .{field.name});
+                    } else {
+                        try writer.print("{s}: ", .{field.name});
+                    }
+                    try this.renderType(writer, field.type.*, indent_level + 1);
+                    try writer.writeAll(",\n");
+                }
+                try writer.splatByteAll(' ', indent_level * 4);
+                try writer.writeAll("}");
+            },
+        }
+    }
+
+    fn needsEscaping(name: []const u8) bool {
+        if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return true;
+        for (name[1..]) |char| {
+            if (!std.ascii.isAlphanumeric(char) and char != '_') return true;
+        }
+        if (std.zig.Token.keywords.has(name)) return true;
+        return false;
+    }
+};
+
 test "Basic types" {
     const json =
         \\{
@@ -336,11 +357,8 @@ test "Basic types" {
     var parsed = try Parser.parse(std.testing.allocator, parsed_json.value);
     defer parsed.deinit();
 
-    var output: std.ArrayList(u8) = .init(std.testing.allocator);
-    defer output.deinit();
+    const output = try Renderer.renderAlloc(std.testing.allocator, parsed, .{});
+    defer std.testing.allocator.free(output);
 
-    var writer = output.writer().adaptToNewApi();
-    try parsed.render(&writer.new_interface);
-
-    try std.testing.expectEqualStrings(expected, output.items);
+    try std.testing.expectEqualStrings(expected, output);
 }

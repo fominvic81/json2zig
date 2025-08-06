@@ -34,6 +34,6 @@ export fn parse(ptr: u32) u32 {
     var parsed = j2z.Parser.parse(allocator, json.value) catch return 0;
     defer parsed.deinit();
 
-    const output = parsed.renderAlloc(allocator) catch return 0;
+    const output = j2z.Renderer.renderAlloc(allocator, parsed, .{}) catch return 0;
     return allocData(output) catch return 0;
 }

@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
 
     const wasm_target = b.resolveTargetQuery(.{ .os_tag = .freestanding, .cpu_arch = .wasm32 });
-    const wasm_mod = b.createModule(.{ .root_source_file = b.path("page/main.zig"), .target = wasm_target, .optimize = optimize });
+    const wasm_mod = b.createModule(.{ .root_source_file = b.path("dist/main.zig"), .target = wasm_target, .optimize = optimize });
     wasm_mod.addImport("json2zig", lib_mod);
     const wasm = b.addExecutable(.{ .name = "json2zig", .root_module = wasm_mod });
     wasm.rdynamic = true;
