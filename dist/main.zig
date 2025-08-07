@@ -25,8 +25,12 @@ export fn free(ptr: u32) void {
     allocator.free(@as([*]u8, @ptrFromInt(ptr - @sizeOf(u32)))[0 .. sizeOf(ptr) + @sizeOf(u32)]);
 }
 
-export fn parse(ptr: u32) u32 {
-    const input = @as([*]u8, @ptrFromInt(ptr))[0..sizeOf(ptr)];
+export fn parse(input_ptr: u32, options_ptr: u32) u32 {
+    const input = @as([*]u8, @ptrFromInt(input_ptr))[0..sizeOf(input_ptr)];
+    const options_json = @as([*]u8, @ptrFromInt(options_ptr))[0..sizeOf(options_ptr)];
+
+    var options = std.json.parseFromSlice(j2z.Renderer.Options, allocator, options_json, .{}) catch return 0;
+    defer options.deinit();
 
     var json = std.json.parseFromSlice(std.json.Value, allocator, input, .{}) catch return 0;
     defer json.deinit();
@@ -34,6 +38,6 @@ export fn parse(ptr: u32) u32 {
     var parsed = j2z.Parser.parse(allocator, json.value) catch return 0;
     defer parsed.deinit();
 
-    const output = j2z.Renderer.renderAlloc(allocator, parsed, .{}) catch return 0;
+    const output = j2z.Renderer.renderAlloc(allocator, parsed, options.value) catch return 0;
     return allocData(output) catch return 0;
 }

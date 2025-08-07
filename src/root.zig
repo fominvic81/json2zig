@@ -261,7 +261,7 @@ pub const Renderer = struct {
     writer: *std.Io.Writer,
     options: Options,
 
-    const Options = struct {
+    pub const Options = struct {
         string: []const u8 = "[]const u8",
         integer: []const u8 = "i64",
         float: []const u8 = "f64",
