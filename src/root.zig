@@ -63,7 +63,7 @@ pub const Parser = struct {
     gpa: Allocator,
     arena: *ArenaAllocator,
 
-    pub const Error = Allocator.Error || error{RootNodeCanNotBeNull};
+    pub const Error = Allocator.Error;
 
     pub fn parse(gpa: Allocator, json: std.json.Value) Error!Parsed {
         const arena = try gpa.create(ArenaAllocator);

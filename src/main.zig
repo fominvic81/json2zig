@@ -3,13 +3,13 @@ const j2z = @import("json2zig");
 const Parser = j2z.Parser;
 const Renderer = j2z.Renderer;
 
-const Command = struct {
+const Option = struct {
     field: ?[]const u8 = null,
     names: []const []const u8,
     description: []const u8,
 };
 
-const commands: []const Command = &.{ .{
+const cli_options: []const Option = &.{ .{
     .field = "string",
     .names = &.{ "--string", "-s" },
     .description = "Type to use for strings",
@@ -45,24 +45,24 @@ const help_msg = blk: {
         \\Options:
         \\
     ;
-    for (commands) |command| {
+    for (cli_options) |option| {
         msg = msg ++ "  ";
-        for (command.names, 0..) |name, i| {
+        for (option.names, 0..) |name, i| {
             if (i > 0) msg = msg ++ ", ";
             msg = msg ++ name;
         }
-        msg = msg ++ "\n    " ++ command.description ++ "\n\n";
+        msg = msg ++ "\n    " ++ option.description ++ "\n\n";
     }
     break :blk msg;
 };
 
-pub fn main() !void {
+pub fn main() std.mem.Allocator.Error!void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const gpa = gpa_state.allocator();
 
     var options: Renderer.Options = .{};
-    var argument_already_set: [commands.len]bool = @splat(false);
+    var argument_already_set: [cli_options.len]bool = @splat(false);
 
     var args = try std.process.argsWithAllocator(gpa);
     defer args.deinit();
@@ -83,8 +83,8 @@ pub fn main() !void {
             return;
         }
 
-        inline for (commands, 0..) |command, i| {
-            const matches = for (command.names) |name| {
+        inline for (cli_options, 0..) |option, i| {
+            const matches = for (option.names) |name| {
                 if (std.mem.eql(u8, argument, name)) break true;
             } else false;
             if (matches) {
@@ -97,7 +97,7 @@ pub fn main() !void {
                     std.debug.print("Error: expected value for argument '{s}'\n", .{argument});
                     return;
                 };
-                if (command.field) |field| {
+                if (option.field) |field| {
                     @field(options, field) = value;
                 } else unreachable;
 
@@ -109,10 +109,21 @@ pub fn main() !void {
         }
     }
 
-    const input = try std.fs.File.stdin().readToEndAlloc(gpa, 0xffffffff);
+    const input = std.fs.File.stdin().readToEndAlloc(gpa, 0xffffffff) catch |err| {
+        std.debug.print("Error: failed to read from stdin '{}'", .{err});
+        return;
+    };
     defer gpa.free(input);
 
-    const json = try std.json.parseFromSlice(std.json.Value, gpa, input, .{});
+    var diagnostics = std.json.Diagnostics{};
+    var source = std.json.Scanner.initCompleteInput(gpa, input);
+    defer source.deinit();
+    source.enableDiagnostics(&diagnostics);
+
+    const json = std.json.parseFromTokenSource(std.json.Value, gpa, &source, .{}) catch |err| {
+        std.debug.print("Error: failed to parse json '{} at line {}, column {}'", .{ err, diagnostics.getLine(), diagnostics.getColumn() });
+        return;
+    };
     defer json.deinit();
 
     var parsed = try Parser.parse(gpa, json.value);
@@ -120,6 +131,10 @@ pub fn main() !void {
 
     var buffer: [1024]u8 = undefined;
     var writer = std.fs.File.stdout().writer(&buffer);
-    try Renderer.render(parsed, &writer.interface, options);
-    try writer.interface.flush();
+    defer writer.interface.flush() catch |err| {
+        std.debug.print("Error: failed to write to stdout '{}'", .{err});
+    };
+    Renderer.render(parsed, &writer.interface, options) catch |err| {
+        std.debug.print("Error: failed to write to stdout '{}'", .{err});
+    };
 }
