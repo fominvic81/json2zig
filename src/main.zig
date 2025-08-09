@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const j2z = @import("json2zig");
 const Parser = j2z.Parser;
 const Renderer = j2z.Renderer;
@@ -56,18 +57,10 @@ const help_msg = blk: {
     break :blk msg;
 };
 
-pub fn main() std.mem.Allocator.Error!void {
-    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
-
+pub fn run(gpa: Allocator, args: anytype, input_reader: *std.Io.Reader, output_writer: *std.Io.Writer) (Allocator.Error || std.Io.Writer.Error || std.Io.Reader.Error)!void {
     var options: Renderer.Options = .{};
     var argument_already_set: [cli_options.len]bool = @splat(false);
 
-    var args = try std.process.argsWithAllocator(gpa);
-    defer args.deinit();
-
-    _ = args.skip();
     while (args.next()) |arg| {
         var it = std.mem.splitScalar(u8, arg, '=');
         const first = it.first();
@@ -89,7 +82,7 @@ pub fn main() std.mem.Allocator.Error!void {
             } else false;
             if (matches) {
                 if (argument_already_set[i]) {
-                    std.debug.print("Error: duplicate argument '{s}'", .{argument});
+                    std.debug.print("Error: duplicate argument '{s}'\n", .{argument});
                     return;
                 }
                 argument_already_set[i] = true;
@@ -109,9 +102,9 @@ pub fn main() std.mem.Allocator.Error!void {
         }
     }
 
-    const input = std.fs.File.stdin().readToEndAlloc(gpa, 0xffffffff) catch |err| {
-        std.debug.print("Error: failed to read from stdin '{}'", .{err});
-        return;
+    const input = input_reader.allocRemaining(gpa, .unlimited) catch |err| switch (err) {
+        error.StreamTooLong => unreachable,
+        else => |err2| return err2,
     };
     defer gpa.free(input);
 
@@ -121,7 +114,7 @@ pub fn main() std.mem.Allocator.Error!void {
     source.enableDiagnostics(&diagnostics);
 
     const json = std.json.parseFromTokenSource(std.json.Value, gpa, &source, .{}) catch |err| {
-        std.debug.print("Error: failed to parse json '{} at line {}, column {}'", .{ err, diagnostics.getLine(), diagnostics.getColumn() });
+        std.debug.print("Error: failed to parse json '{} at line {}, column {}'\n", .{ err, diagnostics.getLine(), diagnostics.getColumn() });
         return;
     };
     defer json.deinit();
@@ -129,12 +122,123 @@ pub fn main() std.mem.Allocator.Error!void {
     var parsed = try Parser.parse(gpa, json.value);
     defer parsed.deinit();
 
-    var buffer: [1024]u8 = undefined;
-    var writer = std.fs.File.stdout().writer(&buffer);
+    try Renderer.render(parsed, output_writer, options);
+}
+
+pub fn main() void {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+
+    var args = std.process.argsWithAllocator(gpa) catch |err| switch (err) {
+        error.OutOfMemory => {
+            std.debug.print("Error: out of memory. Go buy more RAM!\n", .{});
+            return;
+        },
+    };
+    _ = args.skip();
+    defer args.deinit();
+
+    var input_buffer: [1024]u8 = undefined;
+    var reader = std.fs.File.stdin().reader(&input_buffer);
+
+    var output_buffer: [1024]u8 = undefined;
+    var writer = std.fs.File.stdout().writer(&output_buffer);
     defer writer.interface.flush() catch |err| {
-        std.debug.print("Error: failed to write to stdout '{}'", .{err});
+        std.debug.print("Error: failed to write to stdout '{}'\n", .{err});
     };
-    Renderer.render(parsed, &writer.interface, options) catch |err| {
-        std.debug.print("Error: failed to write to stdout '{}'", .{err});
+
+    run(gpa, &args, &reader.interface, &writer.interface) catch |err| switch (err) {
+        error.OutOfMemory => {
+            std.debug.print("Error: out of memory. Go buy more RAM!\n", .{});
+            return;
+        },
+        error.ReadFailed => {
+            std.debug.print("Error: failed to read from stdin '{}'\n", .{reader.err.?});
+            return;
+        },
+        error.EndOfStream => {
+            std.debug.print("Error: unexpected end of stream\n", .{});
+            return;
+        },
+        error.WriteFailed => {
+            std.debug.print("Error: failed to write to stdout '{}'\n", .{writer.err.?});
+            return;
+        },
     };
+}
+
+const TestArgIterator = struct {
+    args: []const []const u8,
+    pos: usize,
+
+    fn init(data: []const []const u8) TestArgIterator {
+        return .{ .args = data, .pos = 0 };
+    }
+
+    fn next(self: *TestArgIterator) ?[]const u8 {
+        if (self.pos == self.args.len) {
+            return null;
+        } else {
+            const arg = self.args[self.pos];
+            self.pos += 1;
+            return arg;
+        }
+    }
+};
+
+test "Custom type arguments" {
+    const args = &.{
+        // zig fmt: off
+        "-s[]u8",
+        "--int", "u69",
+        "-f=f32",
+        "-b", "mabool",
+        "-aany",
+        "--unknown=UnKnOwN",
+        // zig fmt: on
+    };
+    const input =
+        \\[
+        \\    {
+        \\        "string": "something",
+        \\        "int": 123,
+        \\        "float": 123.45,
+        \\        "bool": true,
+        \\        "any": "string",
+        \\        "unknown": null
+        \\    },
+        \\    {
+        \\        "string": "something",
+        \\        "int": 123,
+        \\        "float": 123.45,
+        \\        "bool": true,
+        \\        "any": 123,
+        \\        "unknown": null
+        \\    }
+        \\]
+        ;
+    const expected_output =
+        \\[]struct {
+        \\    string: []u8,
+        \\    int: u69,
+        \\    float: f32,
+        \\    bool: mabool,
+        \\    any: any,
+        \\    unknown: ?UnKnOwN,
+        \\}
+        ;
+
+    var input_stream = std.io.fixedBufferStream(input);
+    var input_reader = input_stream.reader().adaptToNewApi(&.{});
+
+    var output: std.ArrayList(u8) = .init(std.testing.allocator);
+    defer output.deinit();
+
+    var output_writer = output.writer().adaptToNewApi();
+
+    var args_it = TestArgIterator.init(args);
+    try run(std.testing.allocator, &args_it, &input_reader.new_interface, &output_writer.new_interface);
+
+    try std.testing.expectEqualStrings(expected_output, output.items);
 }
