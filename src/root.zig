@@ -119,11 +119,11 @@ pub const Parser = struct {
                 } };
             },
             .object => |object| blk: {
-                var it = object.iterator();
                 var object_type: Type.Object = .{
                     .fields = try this.arena.allocator().alloc(Type.Object.Field, object.count()),
                 };
 
+                var it = object.iterator();
                 while (it.next()) |entry| {
                     object_type.fields[it.index - 1] = .{
                         .name = entry.key_ptr.*,
@@ -281,11 +281,10 @@ pub const Renderer = struct {
     }
 
     pub fn renderAlloc(gpa: Allocator, parsed: Parsed, options: Options) Allocator.Error![]const u8 {
-        var output: std.ArrayList(u8) = .init(gpa);
+        var output: std.Io.Writer.Allocating = .init(gpa);
         defer output.deinit();
 
-        var writer = output.writer().adaptToNewApi();
-        render(parsed, &writer.new_interface, options) catch return writer.err.?;
+        render(parsed, &output.writer, options) catch return error.OutOfMemory;
 
         return try output.toOwnedSlice();
     }

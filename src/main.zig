@@ -229,16 +229,13 @@ test "Custom type arguments" {
         \\}
         ;
 
-    var input_stream = std.io.fixedBufferStream(input);
-    var input_reader = input_stream.reader().adaptToNewApi(&.{});
+    var input_reader = std.io.Reader.fixed(input);
 
-    var output: std.ArrayList(u8) = .init(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
 
-    var output_writer = output.writer().adaptToNewApi();
-
     var args_it = TestArgIterator.init(args);
-    try run(std.testing.allocator, &args_it, &input_reader.new_interface, &output_writer.new_interface);
+    try run(std.testing.allocator, &args_it, &input_reader, &output.writer);
 
-    try std.testing.expectEqualStrings(expected_output, output.items);
+    try std.testing.expectEqualStrings(expected_output, output.written());
 }
